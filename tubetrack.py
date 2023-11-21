@@ -95,7 +95,7 @@ def run_tubetrack(options=None):
     fig_size = 512 / 300 * 2  # 2 is a scaling factor
 
     if options is None or 'file' not in options:
-        file_path = input("Please provide the path to the file to be analyzed.")
+        file_path = input("Please provide the path to the file to be analyzed.\n")
     else:
         file_path = options["file"]
     images = import_nd2(file_path)
@@ -144,5 +144,4 @@ if __name__ == '__main__':
             options['file'] = args.file
     except:
         options = None
-    print(options)
     run_tubetrack(options)
