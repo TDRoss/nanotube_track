@@ -4,7 +4,8 @@ import cv2
 import nd2reader
 import pandas as pd
 import numpy as np
-from skimage import filters, measure, morphology, restoration, color
+from skimage import filters, measure, morphology, color, exposure
+from scipy.ndimage import shift
 import trackpy as tp
 import matplotlib
 matplotlib.use('TkAgg')
@@ -16,7 +17,7 @@ def import_nd2(file_path):
     return images
 
 def segment_filaments(image): 
-    background = filters.gaussian(image, sigma=1)
+    background = filters.gaussian(image, sigma=0.5)
     subtracted_image = image - background
     subtracted_image_normalized = (subtracted_image - subtracted_image.min()) / (subtracted_image.max() - subtracted_image.min())
     local_thresh = filters.threshold_otsu(subtracted_image_normalized)
@@ -34,7 +35,7 @@ def remove_non_filaments(segmented_image):
     for region in measure.regionprops(labeled_skeleton):
         # Identify a branch point by looking at the number of pixels
         # that have more than two neighbors in the skeleton
-        if region.area <= 4: #minimum size threshold
+        if region.area <= 3: #minimum size threshold
             skeleton[labeled_skeleton == region.label] = 0
         else:
             coords = region.coords
@@ -69,13 +70,21 @@ def track_filaments(image_sequence):
 def apply_drift_correction(tracks):
     drift = tp.compute_drift(tracks)
     corrected_tracks = tp.subtract_drift(tracks,drift)
-    return corrected_tracks
+    return corrected_tracks, drift
+
+def drift_correct_image(frames,drift_data):
+    corrected_frames = []
+    corrected_frames.append(frames[0])
+    for i, frame in enumerate(frames[1::]):
+        dx, dy = -drift_data.loc[i+1, ['x', 'y']]
+        corrected_frame = shift(frame, shift=[dy, dx], mode='nearest')
+        corrected_frames.append(corrected_frame)
+    return corrected_frames
+
 
 def calculate_speed(tracks,frame_rate, micron_per_pixel):
     speeds = tracks.groupby('particle').apply(lambda x: micron_per_pixel * frame_rate * np.sqrt((np.diff(x['x'])**2 + np.diff(x['y'])**2).sum()) / (x['frame'].max() - x['frame'].min()))
     return speeds
-
-#For overlaying centroid over masks
 
 
 def overlay_centroids(cleaned_img, centroids):
@@ -84,12 +93,12 @@ def overlay_centroids(cleaned_img, centroids):
     for _, rows in centroids.iterrows():
         x = rows['x']
         y = rows['y']
-        cv2.circle(overlay_image, (int(x), int(y)), 5, (255, 0, 0), -1)  # Red circle at each centroid
+        cv2.circle(overlay_image, (int(x), int(y)), 2, (255, 0, 0), -1)  # Red circle at each centroid
     return overlay_image
 
 
 def run_tubetrack(options=None):
-    frame_rate = 1/30 #frames/seconds
+    frame_rate = 1/20 #frames/seconds
     micron_per_pixel = 1/6.25
     # Calculate the figure size in inches (512 pixels / 300 DPI)
     fig_size = 512 / 300 * 2  # 2 is a scaling factor
@@ -102,13 +111,16 @@ def run_tubetrack(options=None):
     segmented_images = [segment_filaments(image) for image in images]
     cleaned_images = [remove_non_filaments(image) for image in segmented_images]
     tracks = track_filaments(cleaned_images)
-    corrected_tracks = apply_drift_correction(tracks)
+    corrected_tracks, drift = apply_drift_correction(tracks)
+    clahe_images = [exposure.equalize_adapthist(image, clip_limit=0.03) for image in images]
+    driftfree_images = drift_correct_image(clahe_images,drift)
+
 
     frames = []
-    for i in range(len(cleaned_images)):
+    for i in range(len(driftfree_images)):
         current_frame_tracks = corrected_tracks[corrected_tracks['frame'] == i]
         centroids = current_frame_tracks[['x', 'y']]
-        overlay_image = overlay_centroids(cleaned_images[i], centroids)
+        overlay_image = overlay_centroids(driftfree_images[i], centroids)
         frames.append(overlay_image)
 
     filename, _ = os.path.splitext(file_path)
